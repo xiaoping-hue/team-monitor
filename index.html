@@ -2390,7 +2390,11 @@ async function employeeConnect() {
 
     employeePC.onicecandidate = (e) => {
       if (!e.candidate) {
-        setTimeout(() => { $('employeeAnswerSDP').value = JSON.stringify(employeePC.localDescription); }, 100);
+        // ICE 收集完毕，显示最终应答 SDP
+        $('employeeAnswerSDP').value = JSON.stringify(employeePC.localDescription);
+        $('employeeAnswerSDP').style.display = '';
+        $('employeeAnswerActions').style.display = '';
+        $('employeeAnswerHint').textContent = '请复制应答 SDP 发给管理端';
       }
     };
 
@@ -2403,7 +2407,12 @@ async function employeeConnect() {
     await employeePC.setRemoteDescription(new RTCSessionDescription(offer));
     const answer = await employeePC.createAnswer();
     await employeePC.setLocalDescription(answer);
-    setTimeout(() => { $('employeeAnswerSDP').value = JSON.stringify(employeePC.localDescription); }, 1500);
+    // 立即显示应答 SDP（可能尚未包含所有 ICE candidates，但足够建立连接）
+    $('employeeAnswerSDP').value = JSON.stringify(employeePC.localDescription);
+    $('employeeAnswerSDP').style.display = '';
+    $('employeeAnswerActions').style.display = '';
+    $('employeeAnswerHint').textContent = '正在收集网络信息，稍后自动更新...';
+    // ICE 收集完成后 onicecandidate(null) 会自动更新为最终版本
   } catch (err) {
     toast('连接失败: ' + err.message, 'error');
     $('btnEmployeeConnect').disabled = false;
