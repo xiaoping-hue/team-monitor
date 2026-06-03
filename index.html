@@ -767,6 +767,17 @@ body {
   transition: background 0.2s;
 }
 .btn-disconnect:hover { background: rgba(231,76,60,0.25); }
+.btn-reconnect {
+  background: rgba(241,196,15,0.15);
+  color: #f1c40f;
+  border: 1px solid rgba(241,196,15,0.3);
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  transition: background 0.2s;
+}
+.btn-reconnect:hover { background: rgba(241,196,15,0.25); }
 
 /* 员工端连接面板 */
 .employee-connect-section {
@@ -2127,6 +2138,21 @@ function switchMode(mode) {
     $('connLabel').textContent = '监控中';
     if (cameraStream) stopCamera();
     if (screenStream) stopScreenShare();
+    // 恢复已保存的员工卡片
+    let savedEmployees = [];
+    try { savedEmployees = JSON.parse(localStorage.getItem('manager_employees') || '[]'); } catch {}
+    savedEmployees.forEach(name => {
+      managerCreateCard(name);
+      const card = document.querySelector(`.employee-card[data-employee="${cssEscape(name)}"]`);
+      if (card) {
+        card.classList.remove('connecting');
+        card.classList.add('disconnected');
+        const s = card.querySelector('.employee-status');
+        if (s) s.className = 'employee-status offline';
+        const reconnectBtn = card.querySelector('.btn-reconnect');
+        if (reconnectBtn) reconnectBtn.style.display = '';
+      }
+    });
   } else {
     $('employeeMode').style.display = 'block';
     $('managerMode').style.display = 'none';
@@ -2177,24 +2203,9 @@ async function managerCreateOffer() {
     };
 
     pc.onconnectionstatechange = () => {
-        const card = document.querySelector(`.employee-card[data-employee="${cssEscape(name)}"]`);
-        if (!card) return;
-        const statusDot = card.querySelector('.employee-status');
-        card.classList.remove('connecting', 'connected', 'disconnected');
-        if (statusDot) statusDot.classList.remove('connecting', 'online', 'offline');
-
-        if (pc.connectionState === 'connected') {
-          card.classList.add('connected');
-          if (statusDot) statusDot.classList.add('online');
-          toast(name + ' 已连接');
-        } else if (pc.connectionState === 'connecting' || pc.connectionState === 'new') {
-          card.classList.add('connecting');
-          if (statusDot) statusDot.classList.add('connecting');
-        } else {
-          card.classList.add('disconnected');
-          if (statusDot) statusDot.classList.add('offline');
-          managerMarkDisconnected(name);
-        }
+        managerSyncCardStatus(name, pc);
+        if (pc.connectionState === 'connected') toast(name + ' 已连接');
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') managerMarkDisconnected(name);
       };
 
       pc.ontrack = (event) => managerOnTrack(name, event);
@@ -2253,24 +2264,8 @@ async function managerAcceptAnswer() {
       };
 
       pc.onconnectionstatechange = () => {
-        const card = document.querySelector(`.employee-card[data-employee="${cssEscape(name)}"]`);
-        if (!card) return;
-        const statusDot = card.querySelector('.employee-status');
-        card.classList.remove('connecting', 'connected', 'disconnected');
-        if (statusDot) statusDot.classList.remove('connecting', 'online', 'offline');
-
-        if (pc.connectionState === 'connected') {
-          card.classList.add('connected');
-          if (statusDot) statusDot.classList.add('online');
-          toast(name + ' 已连接');
-        } else if (pc.connectionState === 'connecting' || pc.connectionState === 'new') {
-          card.classList.add('connecting');
-          if (statusDot) statusDot.classList.add('connecting');
-        } else {
-          card.classList.add('disconnected');
-          if (statusDot) statusDot.classList.add('offline');
-          managerMarkDisconnected(name);
-        }
+        managerSyncCardStatus(name, pc);
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') managerMarkDisconnected(name);
       };
 
       pc.ontrack = (event) => managerOnTrack(name, event);
@@ -2282,17 +2277,22 @@ async function managerAcceptAnswer() {
     const answer = typeof parsed === 'object' ? parsed : { type: 'answer', sdp: answerText };
     await conn.pc.setRemoteDescription(new RTCSessionDescription(answer));
 
-    // 立即创建员工卡片（不等 WebRTC 完全连接）
+    // 立即创建员工卡片，并同步当前连接状态
     managerCreateCard(name);
-    const card = document.querySelector(`.employee-card[data-employee="${cssEscape(name)}"]`);
-    if (card) { card.classList.add('connecting'); card.classList.remove('disconnected'); }
+    managerSyncCardStatus(name, conn.pc);
 
     $('btnManagerAccept').disabled = false;
     $('btnManagerAccept').textContent = '接受应答';
     $('managerAnswerInput').value = '';
     $('managerAnswerName').value = '';
     $('managerAnswerRow').hidden = true;
-    toast('已接受 ' + name + ' 的应答，等待连接建立...');
+    if (conn.pc.connectionState === 'connected') {
+      toast(name + ' 已连接');
+    } else if (conn.pc.connectionState === 'failed') {
+      toast('连接失败，请检查网络或重试', 'error');
+    } else {
+      toast('已接受 ' + name + ' 的应答，等待连接...');
+    }
   } catch (err) {
     toast('接受应答失败: ' + err.message, 'error');
     $('btnManagerAccept').disabled = false;
@@ -2352,6 +2352,58 @@ function managerUpdateStats(employeeName, checkins, absences) {
     `<div class="stat-row"><span>外出: <span class="stat-highlight">${absenceCount} 次</span></span><span>累计: <span class="stat-highlight">${totalAbsenceMin} 分钟</span></span></div>`;
 }
 
+function managerSyncCardStatus(name, pc) {
+  const card = document.querySelector(`.employee-card[data-employee="${cssEscape(name)}"]`);
+  if (!card) return;
+  const statusDot = card.querySelector('.employee-status');
+  const state = pc.connectionState;
+  card.classList.remove('connecting', 'connected', 'disconnected');
+  if (statusDot) statusDot.classList.remove('connecting', 'online', 'offline');
+
+  const btnDisconnect = card.querySelector('.btn-disconnect');
+  const btnReconnect = card.querySelector('.btn-reconnect');
+
+  if (state === 'connected') {
+    card.classList.add('connected');
+    if (statusDot) statusDot.classList.add('online');
+    if (btnDisconnect) btnDisconnect.style.display = '';
+    if (btnReconnect) btnReconnect.style.display = 'none';
+  } else if (state === 'connecting' || state === 'new') {
+    card.classList.add('connecting');
+    if (statusDot) statusDot.classList.add('connecting');
+    if (btnDisconnect) btnDisconnect.style.display = 'none';
+    if (btnReconnect) btnReconnect.style.display = 'none';
+  } else {
+    card.classList.add('disconnected');
+    if (statusDot) statusDot.classList.add('offline');
+    if (btnDisconnect) btnDisconnect.style.display = '';
+    if (btnReconnect) btnReconnect.style.display = '';
+  }
+}
+
+function managerReconnect(employeeName) {
+  // 清理旧连接
+  const oldConn = managerConnections.get(employeeName);
+  if (oldConn) {
+    try { oldConn.dc.close(); } catch {}
+    try { oldConn.pc.close(); } catch {}
+    managerConnections.delete(employeeName);
+  }
+  // 重置卡片状态
+  const card = document.querySelector(`.employee-card[data-employee="${cssEscape(employeeName)}"]`);
+  if (card) {
+    card.classList.remove('disconnected');
+    card.classList.add('connecting');
+    const s = card.querySelector('.employee-status');
+    if (s) s.className = 'employee-status connecting';
+    const btnReconnect = card.querySelector('.btn-reconnect');
+    if (btnReconnect) btnReconnect.style.display = 'none';
+    const btnDisconnect = card.querySelector('.btn-disconnect');
+    if (btnDisconnect) btnDisconnect.style.display = '';
+  }
+  toast('已重置 ' + employeeName + '，请重新生成邀请码');
+}
+
 function managerCreateCard(employeeName) {
   // 防止重复创建
   if (document.getElementById(`employeeCard_${cssEscape(employeeName)}`)) return;
@@ -2370,9 +2422,17 @@ function managerCreateCard(employeeName) {
       `<div class="employee-video-wrap"><div class="video-label">桌面分享</div><div class="video-placeholder">等待画面...</div><video autoplay playsinline muted class="employee-screen-video" style="display:none;"></video></div>` +
     `</div>` +
     `<div class="employee-stats"><div class="stat-row"><span>吃饭: <span class="stat-highlight">0/3</span></span><span>抽烟: <span class="stat-highlight">0 次</span></span></div><div class="stat-row"><span>外出: <span class="stat-highlight">0 次</span></span><span>累计: <span class="stat-highlight">0 分钟</span></span></div></div>` +
-    `<div class="employee-card-actions"><button class="btn-disconnect" onclick="managerDisconnect('${htmlescape(employeeName)}')">断开连接</button></div>`;
+    `<div class="employee-card-actions"><button class="btn-disconnect" onclick="managerDisconnect('${htmlescape(employeeName)}')">断开连接</button><button class="btn-reconnect" onclick="managerReconnect('${htmlescape(employeeName)}')" style="display:none;">重新连接</button></div>`;
 
   $('employeeGrid').appendChild(card);
+
+  // 持久化员工列表
+  let savedEmployees = [];
+  try { savedEmployees = JSON.parse(localStorage.getItem('manager_employees') || '[]'); } catch {}
+  if (!savedEmployees.includes(employeeName)) {
+    savedEmployees.push(employeeName);
+    localStorage.setItem('manager_employees', JSON.stringify(savedEmployees));
+  }
 
   const conn = managerConnections.get(employeeName);
   if (conn) conn.cardEl = card;
@@ -2390,10 +2450,18 @@ function managerCreateCard(employeeName) {
 function managerMarkDisconnected(employeeName) {
   const card = document.querySelector(`.employee-card[data-employee="${cssEscape(employeeName)}"]`);
   if (card) {
-    card.classList.remove('connected');
+    card.classList.remove('connected', 'connecting');
     card.classList.add('disconnected');
     const s = card.querySelector('.employee-status');
     if (s) s.className = 'employee-status offline';
+    const btnReconnect = card.querySelector('.btn-reconnect');
+    if (btnReconnect) btnReconnect.style.display = '';
+    const btnDisconnect = card.querySelector('.btn-disconnect');
+    if (btnDisconnect) btnDisconnect.style.display = '';
+    const conn = managerConnections.get(employeeName);
+    if (conn) {
+      try { conn.dc.close(); } catch {}
+    }
   }
 }
 
@@ -2406,6 +2474,11 @@ function managerDisconnect(employeeName) {
   }
   const card = document.querySelector(`.employee-card[data-employee="${cssEscape(employeeName)}"]`);
   if (card) card.remove();
+  // 从持久化列表中移除
+  let savedEmployees = [];
+  try { savedEmployees = JSON.parse(localStorage.getItem('manager_employees') || '[]'); } catch {}
+  savedEmployees = savedEmployees.filter(n => n !== employeeName);
+  localStorage.setItem('manager_employees', JSON.stringify(savedEmployees));
   if (managerConnections.size === 0) {
     const empty = $('managerEmptyState');
     if (empty) empty.style.display = '';
@@ -2419,6 +2492,10 @@ let employeeDC = null;
 async function employeeConnect() {
   const sdpText = $('managerSDPInput').value.trim();
   if (!sdpText) { toast('请粘贴管理端邀请码'); return; }
+
+  if (!cameraStream && !screenStream) {
+    toast('提示：未开启屏幕共享或摄像头，管理端将无法看到画面。建议先开启后再连接。', 'warning');
+  }
 
   $('btnEmployeeConnect').disabled = true;
   $('btnEmployeeConnect').textContent = '连接中...';
