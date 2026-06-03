@@ -669,6 +669,12 @@ body {
 .employee-card.connected { border-color: rgba(46,204,113,0.3); }
 .employee-card.connecting { border-color: rgba(241,196,15,0.3); }
 .employee-card.disconnected { border-color: rgba(231,76,60,0.3); }
+.employee-card.timeout-warn { border-color: rgba(255,152,0,0.5); box-shadow: 0 0 12px rgba(255,152,0,0.2); }
+.conn-status-text {
+  padding: 0 18px 6px;
+  font-size: 0.8rem;
+  color: #ffc107;
+}
 .employee-card-header {
   display: flex;
   justify-content: space-between;
@@ -1183,7 +1189,13 @@ const rtcConfig = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-  ]
+    {
+      urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ],
+  iceCandidatePoolSize: 2
 };
 
 // ========== DOM 引用 ==========
@@ -2149,6 +2161,8 @@ function switchMode(mode) {
         card.classList.add('disconnected');
         const s = card.querySelector('.employee-status');
         if (s) s.className = 'employee-status offline';
+        const st = card.querySelector('.conn-status-text');
+        if (st) { st.textContent = '已断开'; st.style.color = '#f44336'; }
         const reconnectBtn = card.querySelector('.btn-reconnect');
         if (reconnectBtn) reconnectBtn.style.display = '';
       }
@@ -2357,27 +2371,56 @@ function managerSyncCardStatus(name, pc) {
   if (!card) return;
   const statusDot = card.querySelector('.employee-status');
   const state = pc.connectionState;
-  card.classList.remove('connecting', 'connected', 'disconnected');
+  const iceState = pc.iceConnectionState;
+  card.classList.remove('connecting', 'connected', 'disconnected', 'timeout-warn');
   if (statusDot) statusDot.classList.remove('connecting', 'online', 'offline');
 
   const btnDisconnect = card.querySelector('.btn-disconnect');
   const btnReconnect = card.querySelector('.btn-reconnect');
+  const statusText = card.querySelector('.conn-status-text');
+
+  // 更新连接状态文字
+  if (statusText) {
+    statusText.textContent = iceState === 'failed' ? '连接失败 - 请检查网络或刷新重试'
+      : iceState === 'disconnected' ? '已断开 - 正在尝试重连...'
+      : state === 'connected' ? '已连接'
+      : state === 'connecting' || state === 'new' ? '连接中...'
+      : iceState;
+  }
+
+  // 连接超时检测：connecting 状态超过 15 秒显示警告
+  if ((state === 'connecting' || state === 'new') && !pc._timeoutWarnId) {
+    pc._timeoutWarnId = setTimeout(() => {
+      const c = document.querySelector(`.employee-card[data-employee="${cssEscape(name)}"]`);
+      if (c && (pc.connectionState === 'connecting' || pc.connectionState === 'new')) {
+        c.classList.add('timeout-warn');
+        const st = c.querySelector('.conn-status-text');
+        if (st) st.textContent = '连接超时 - 可能被防火墙/NAT阻断，尝试刷新重连';
+        if (statusText) statusText.style.color = '#ff9800';
+      }
+    }, 15000);
+  }
 
   if (state === 'connected') {
     card.classList.add('connected');
     if (statusDot) statusDot.classList.add('online');
     if (btnDisconnect) btnDisconnect.style.display = '';
     if (btnReconnect) btnReconnect.style.display = 'none';
+    if (statusText) statusText.style.color = '#4caf50';
+    if (pc._timeoutWarnId) { clearTimeout(pc._timeoutWarnId); pc._timeoutWarnId = null; }
   } else if (state === 'connecting' || state === 'new') {
     card.classList.add('connecting');
     if (statusDot) statusDot.classList.add('connecting');
     if (btnDisconnect) btnDisconnect.style.display = 'none';
     if (btnReconnect) btnReconnect.style.display = 'none';
+    if (statusText) statusText.style.color = '#ffc107';
   } else {
     card.classList.add('disconnected');
     if (statusDot) statusDot.classList.add('offline');
     if (btnDisconnect) btnDisconnect.style.display = '';
     if (btnReconnect) btnReconnect.style.display = '';
+    if (statusText) statusText.style.color = '#f44336';
+    if (pc._timeoutWarnId) { clearTimeout(pc._timeoutWarnId); pc._timeoutWarnId = null; }
   }
 }
 
@@ -2417,6 +2460,7 @@ function managerCreateCard(employeeName) {
   card.id = `employeeCard_${cssEscape(employeeName)}`;
   card.innerHTML =
     `<div class="employee-card-header"><div class="employee-name">${htmlescape(employeeName)}</div><div class="employee-status connecting"></div></div>` +
+    `<div class="conn-status-text">连接中...</div>` +
     `<div class="employee-videos">` +
       `<div class="employee-video-wrap"><div class="video-label">摄像头监控</div><div class="video-placeholder">等待画面...</div><video autoplay playsinline muted class="employee-camera-video" style="display:none;"></video></div>` +
       `<div class="employee-video-wrap"><div class="video-label">桌面分享</div><div class="video-placeholder">等待画面...</div><video autoplay playsinline muted class="employee-screen-video" style="display:none;"></video></div>` +
