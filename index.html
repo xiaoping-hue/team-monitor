@@ -2107,6 +2107,13 @@ let currentMode = 'employee';
 function switchMode(mode) {
   currentMode = mode;
   if (mode === 'manager') {
+    const pwd = prompt('请输入管理密码：');
+    if (pwd !== '231231') {
+      if (pwd !== null) toast('密码错误，无法进入管理模式', 'error');
+      $('btnModeEmployee').classList.add('active');
+      $('btnModeManager').classList.remove('active');
+      return;
+    }
     $('employeeMode').style.display = 'none';
     $('managerMode').style.display = 'block';
     $('btnModeEmployee').classList.remove('active');
