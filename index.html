@@ -1156,6 +1156,7 @@ body {
         <button class="btn-generate" id="btnManagerCreateOffer" onclick="managerCreateOffer()">生成邀请码</button>
       </div>
       <textarea id="managerOfferSDP" readonly placeholder="邀请码（SDP）将在生成后显示在这里..." style="margin-top:10px;"></textarea>
+      <button class="btn btn-sm" onclick="copySDP('managerOfferSDP')" style="margin-top:6px;">复制邀请码</button>
       <div class="connect-form" style="margin-top:10px;" id="managerAnswerRow" hidden>
         <input type="text" id="managerAnswerName" placeholder="员工名字" style="width:120px;" maxlength="30">
         <input type="text" id="managerAnswerInput" placeholder="粘贴员工应答 SDP..." style="flex:1;">
@@ -2192,6 +2193,34 @@ function htmlescape(str) {
   return div.innerHTML;
 }
 
+// 修复常见 SDP 复制粘贴损坏
+function sanitizeSDP(raw) {
+  let sdp = raw;
+  // 修复 msid 中丢失的空格：两个 UUID 粘在一起
+  // 模式: msid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxxyyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+  sdp = sdp.replace(/(msid:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/gi, '$1 $2');
+  // 修复全角空格
+  sdp = sdp.replace(/\u3000/g, ' ');
+  return sdp;
+}
+
+function parseOfferSDP(text) {
+  let sdp = text;
+  // 尝试 JSON 解析
+  try {
+    const obj = JSON.parse(text);
+    if (obj && obj.sdp) {
+      sdp = typeof obj.sdp === 'string' ? obj.sdp : text;
+    }
+  } catch {}
+  // 如果文本本身看起来像 JSON 但 JSON.parse 失败了，尝试提取 sdp 字段
+  if (text.startsWith('{') && text.includes('"sdp"')) {
+    const m = text.match(/"sdp"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (m) sdp = m[1].replace(/\\r\\n/g, '\r\n').replace(/\\n/g, '\n').replace(/\\"/g, '"');
+  }
+  return { type: 'offer', sdp: sanitizeSDP(sdp) };
+}
+
 async function managerCreateOffer() {
   const name = $('managerEmployeeName').value.trim();
   if (!name) { toast('请输入员工名字'); return; }
@@ -2215,8 +2244,11 @@ async function managerCreateOffer() {
         setTimeout(() => { $('managerOfferSDP').value = JSON.stringify(pc.localDescription); }, 100);
       }
     };
-
-    pc.onconnectionstatechange = () => {
+    pc.onicecandidateerror = (e) => {
+      console.error('[Manager] ICE candidate error:', e.errorCode, e.errorText, e.url);
+    };
+    pc.oniceconnectionstatechange = () => {
+        console.log('[Manager] ICE state:', pc.iceConnectionState, '| Conn state:', pc.connectionState);
         managerSyncCardStatus(name, pc);
         if (pc.connectionState === 'connected') toast(name + ' 已连接');
         if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') managerMarkDisconnected(name);
@@ -2547,9 +2579,7 @@ async function employeeConnect() {
   $('employeeConnectStatus').className = 'employee-connect-status connecting';
 
   try {
-    let parsed = sdpText;
-    try { parsed = JSON.parse(sdpText); } catch {}
-    const offer = typeof parsed === 'object' ? parsed : { type: 'offer', sdp: sdpText };
+    const offer = parseOfferSDP(sdpText);
 
     employeePC = new RTCPeerConnection(rtcConfig);
 
@@ -2591,7 +2621,6 @@ async function employeeConnect() {
 
     employeePC.onicecandidate = (e) => {
       if (!e.candidate) {
-        // ICE 收集完毕，显示最终应答 SDP
         $('employeeAnswerSDP').value = JSON.stringify(employeePC.localDescription);
         $('employeeAnswerSDP').style.display = '';
         $('employeeAnswerActions').style.display = '';
@@ -2599,7 +2628,12 @@ async function employeeConnect() {
       }
     };
 
+    employeePC.onicecandidateerror = (e) => {
+      console.error('[Employee] ICE candidate error:', e.errorCode, e.errorText, e.url);
+    };
+
     employeePC.onconnectionstatechange = () => {
+      console.log('[Employee] ICE state:', employeePC.iceConnectionState, '| Conn:', employeePC.connectionState);
       if (employeePC.connectionState === 'disconnected' || employeePC.connectionState === 'failed') {
         if (employeeDC) employeeDC.close();
       }
